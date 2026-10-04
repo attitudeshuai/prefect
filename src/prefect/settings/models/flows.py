@@ -46,3 +46,29 @@ class FlowsSettings(PrefectBaseSettings):
             "prefect_flow_default_retry_delay_seconds",
         ),
     )
+
+    default_retry_budget_seconds: Optional[float] = Field(
+        default=None,
+        ge=0,
+        description=(
+            "This value sets the default cumulative run-time retry budget, in"
+            " seconds, for all flows. Unset by default, meaning retries have no"
+            " time budget."
+        ),
+    )
+
+    default_retry_budget_include_queue_time: bool = Field(
+        default=False,
+        description=(
+            "This value sets the default for whether time spent awaiting a flow"
+            " run retry counts toward the retry budget."
+        ),
+    )
+
+    default_retry_budget_enforcement: str = Field(
+        default="fail",
+        description=(
+            "This value sets the default disposition when a flow run exceeds"
+            " its retry budget: fail, cancel, or mark."
+        ),
+    )

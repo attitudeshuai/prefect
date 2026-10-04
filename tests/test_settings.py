@@ -303,6 +303,13 @@ SUPPORTED_SETTINGS = {
     "PREFECT_FLOWS_DEFAULT_RETRIES": {"test_value": 10},
     "PREFECT_FLOW_DEFAULT_RETRY_DELAY_SECONDS": {"test_value": 10, "legacy": True},
     "PREFECT_FLOWS_DEFAULT_RETRY_DELAY_SECONDS": {"test_value": 10},
+    "PREFECT_FLOWS_DEFAULT_RETRY_BUDGET_SECONDS": {"test_value": 10},
+    "PREFECT_FLOWS_DEFAULT_RETRY_BUDGET_INCLUDE_QUEUE_TIME": {
+        "test_value": True
+    },
+    "PREFECT_FLOWS_DEFAULT_RETRY_BUDGET_ENFORCEMENT": {
+        "test_value": "cancel"
+    },
     "PREFECT_HOME": {"test_value": Path.home() / ".prefect" / "test"},
     "PREFECT_INTERNAL_LOGGING_LEVEL": {"test_value": "INFO"},
     "PREFECT_LOCAL_STORAGE_PATH": {
@@ -564,6 +571,13 @@ SUPPORTED_SETTINGS = {
     "PREFECT_TASKS_DEFAULT_PERSIST_RESULT": {"test_value": True},
     "PREFECT_TASKS_DEFAULT_RETRIES": {"test_value": 10},
     "PREFECT_TASKS_DEFAULT_RETRY_DELAY_SECONDS": {"test_value": 10},
+    "PREFECT_TASKS_DEFAULT_RETRY_BUDGET_SECONDS": {"test_value": 10},
+    "PREFECT_TASKS_DEFAULT_RETRY_BUDGET_INCLUDE_QUEUE_TIME": {
+        "test_value": True
+    },
+    "PREFECT_TASKS_DEFAULT_RETRY_BUDGET_ENFORCEMENT": {
+        "test_value": "mark"
+    },
     "PREFECT_TASKS_DISABLE_CACHING": {"test_value": False},
     "PREFECT_TASKS_REFRESH_CACHE": {"test_value": True},
     "PREFECT_TASKS_RUNNER_PROCESS_POOL_MAX_WORKERS": {"test_value": 5},

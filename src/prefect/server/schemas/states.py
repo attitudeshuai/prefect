@@ -101,6 +101,9 @@ class StateDetails(PrefectBaseModel):
     # The ID of the lease that is currently holding the deployment concurrency slot
     # for this run.
     deployment_concurrency_lease_id: Optional[UUID] = None
+    # Whether this attempt began as a local retry or after a remote reschedule.
+    # Written only on newly created states; not preserved across transitions.
+    attempt_origin: Optional[Literal["local", "remote"]] = None
 
 
 class StateBaseModel(TimeSeriesBaseModel):

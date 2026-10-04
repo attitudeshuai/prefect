@@ -210,6 +210,9 @@ class StateDetails(PrefectBaseModel):
     # The ID of the lease that is currently holding the deployment concurrency slot
     # for this run.
     deployment_concurrency_lease_id: Optional[UUID] = None
+    # Whether this attempt began as a local retry or after a remote reschedule.
+    # Written only on newly created states; not preserved across transitions.
+    attempt_origin: Optional[Literal["local", "remote"]] = None
 
     def to_run_result(
         self, run_type: RunType
@@ -558,6 +561,28 @@ class FlowRunPolicy(PrefectBaseModel):
     retry_type: Optional[Literal["in_process", "reschedule"]] = Field(
         default=None, description="The type of retry this run is undergoing."
     )
+    retry_budget_seconds: Optional[float] = Field(
+        default=None,
+        ge=0,
+        description=(
+            "The cumulative run-time budget across attempts, in seconds. If not"
+            " set, retries are not constrained by a time budget."
+        ),
+    )
+    retry_budget_include_queue_time: Optional[bool] = Field(
+        default=None,
+        description=(
+            "Whether time spent awaiting a retry counts toward the budget. The"
+            " basis is frozen when the run enters an AwaitingRetry state."
+        ),
+    )
+    retry_budget_enforcement: Optional[Literal["fail", "cancel", "mark"]] = Field(
+        default=None,
+        description=(
+            "How to handle a run whose retry budget is exceeded: fail it,"
+            " cancel it, or mark it without changing scheduling."
+        ),
+    )
 
     @model_validator(mode="before")
     @classmethod
@@ -661,6 +686,25 @@ class FlowRun(TimeSeriesBaseModel, ObjectBaseModel):
         default=datetime.timedelta(0),
         description="The difference between actual and expected start time.",
     )
+    retry_budget_elapsed: datetime.timedelta = Field(
+        default=datetime.timedelta(0),
+        description=(
+            "Cumulative time counted against the retry budget across attempts."
+            " Persisted on the run; never summed from state history on read."
+        ),
+    )
+    retry_budget_wait_state_id: Optional[UUID] = Field(
+        default=None,
+        description="Guard marker for the currently pending/last folded retry wait.",
+    )
+    retry_budget_count_wait: Optional[bool] = Field(
+        default=None,
+        description="Wait-inclusion basis frozen when entering an AwaitingRetry state.",
+    )
+    retry_budget_exceeded: bool = Field(
+        default=False,
+        description="Sticky marker set once the retry budget has been exceeded.",
+    )
     auto_scheduled: bool = Field(
         default=False,
         description="Whether or not the flow run was automatically scheduled.",
@@ -755,6 +799,28 @@ class TaskRunPolicy(PrefectBaseModel):
     )
     retry_jitter_factor: Optional[float] = Field(
         default=None, description="Determines the amount a retry should jitter"
+    )
+    retry_budget_seconds: Optional[float] = Field(
+        default=None,
+        ge=0,
+        description=(
+            "The cumulative run-time budget across attempts, in seconds. If not"
+            " set, retries are not constrained by a time budget."
+        ),
+    )
+    retry_budget_include_queue_time: Optional[bool] = Field(
+        default=None,
+        description=(
+            "Whether time spent awaiting a retry counts toward the budget. The"
+            " basis is frozen when the run enters an AwaitingRetry state."
+        ),
+    )
+    retry_budget_enforcement: Optional[Literal["fail", "cancel", "mark"]] = Field(
+        default=None,
+        description=(
+            "How to handle a run whose retry budget is exceeded: fail it,"
+            " cancel it, or mark it without changing scheduling."
+        ),
     )
 
     @model_validator(mode="after")
@@ -928,6 +994,25 @@ class TaskRun(TimeSeriesBaseModel, ObjectBaseModel):
     estimated_start_time_delta: datetime.timedelta = Field(
         default=datetime.timedelta(0),
         description="The difference between actual and expected start time.",
+    )
+    retry_budget_elapsed: datetime.timedelta = Field(
+        default=datetime.timedelta(0),
+        description=(
+            "Cumulative time counted against the retry budget across attempts."
+            " Persisted on the run; never summed from state history on read."
+        ),
+    )
+    retry_budget_wait_state_id: Optional[UUID] = Field(
+        default=None,
+        description="Guard marker for the currently pending/last folded retry wait.",
+    )
+    retry_budget_count_wait: Optional[bool] = Field(
+        default=None,
+        description="Wait-inclusion basis frozen when entering an AwaitingRetry state.",
+    )
+    retry_budget_exceeded: bool = Field(
+        default=False,
+        description="Sticky marker set once the retry budget has been exceeded.",
     )
 
     state: Optional[State] = Field(

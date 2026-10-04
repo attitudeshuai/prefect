@@ -392,6 +392,23 @@ class Run(Base):
     total_run_time: Mapped[datetime.timedelta] = mapped_column(
         server_default="0", default=datetime.timedelta(0)
     )
+    # Cumulative time counted against the retry budget across attempts.
+    # Incremented inline as running (and, when configured, retry-wait) segments
+    # close; never computed on read by summing state history.
+    retry_budget_elapsed: Mapped[datetime.timedelta] = mapped_column(
+        server_default="0", default=datetime.timedelta(0)
+    )
+    # Guard marker that makes wait-segment folds idempotent: while awaiting a
+    # retry it holds the AwaitingRetry state id; after the segment is folded it
+    # holds the id of the state that performed the fold.
+    retry_budget_wait_state_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID)
+    # The wait-inclusion basis (count queue time or not), frozen when the run
+    # enters an AwaitingRetry state.
+    retry_budget_count_wait: Mapped[Optional[bool]] = mapped_column(sa.Boolean)
+    # Sticky marker set once the configured retry budget has been exceeded.
+    retry_budget_exceeded: Mapped[bool] = mapped_column(
+        sa.Boolean, server_default="0", default=False
+    )
 
     @hybrid_property
     def estimated_run_time(self) -> datetime.timedelta:
