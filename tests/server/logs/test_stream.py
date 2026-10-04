@@ -21,6 +21,7 @@ from prefect.server.schemas.filters import (
     LogFilter,
     LogFilterFlowRunId,
     LogFilterLevel,
+    LogFilterStructuredFields,
     LogFilterTaskRunId,
     LogFilterTimestamp,
 )
@@ -133,6 +134,84 @@ def test_log_matches_filter_task_run_id(sample_log1, sample_log2):
     filter = LogFilter(task_run_id=LogFilterTaskRunId(is_null_=False))
     assert not log_matches_filter(sample_log2, filter)
     assert log_matches_filter(sample_log1, filter)
+
+
+@pytest.fixture
+def structured_log():
+    return Log(
+        id=uuid4(),
+        name="test.logger",
+        level=20,
+        message="structured",
+        timestamp=now("UTC"),
+        flow_run_id=uuid4(),
+        structured_fields={
+            "user_id": 42,
+            "region": "us-east-1",
+            "active": True,
+            "score": 9.5,
+            "empty": None,
+        },
+    )
+
+
+def test_log_matches_filter_structured_fields_scalars(structured_log, sample_log2):
+    assert log_matches_filter(
+        structured_log,
+        LogFilter(structured_fields=LogFilterStructuredFields(fields={"user_id": 42})),
+    )
+    assert log_matches_filter(
+        structured_log,
+        LogFilter(
+            structured_fields=LogFilterStructuredFields(
+                fields={"region": "us-east-1", "active": True}
+            )
+        ),
+    )
+    assert not log_matches_filter(
+        structured_log,
+        LogFilter(structured_fields=LogFilterStructuredFields(fields={"user_id": 7})),
+    )
+    # Booleans are matched strictly and must not compare against integers
+    assert not log_matches_filter(
+        structured_log,
+        LogFilter(structured_fields=LogFilterStructuredFields(fields={"active": 1})),
+    )
+    # A null expectation matches an explicit JSON null and a missing key
+    assert log_matches_filter(
+        structured_log,
+        LogFilter(structured_fields=LogFilterStructuredFields(fields={"empty": None})),
+    )
+    assert log_matches_filter(
+        sample_log2,
+        LogFilter(structured_fields=LogFilterStructuredFields(fields={"absent": None})),
+    )
+
+
+def test_log_matches_filter_structured_fields_stacks_with_other_criteria(
+    structured_log,
+):
+    matching = LogFilter(
+        level=LogFilterLevel(ge_=20),
+        flow_run_id=LogFilterFlowRunId(any_=[structured_log.flow_run_id]),
+        structured_fields=LogFilterStructuredFields(fields={"user_id": 42}),
+    )
+    assert log_matches_filter(structured_log, matching)
+
+    # A conflicting level criterion excludes the log even though the
+    # structured field matches.
+    level_conflict = LogFilter(
+        level=LogFilterLevel(ge_=30),
+        structured_fields=LogFilterStructuredFields(fields={"user_id": 42}),
+    )
+    assert not log_matches_filter(structured_log, level_conflict)
+
+    # A conflicting flow run criterion excludes the log.
+    run_conflict = LogFilter(
+        flow_run_id=LogFilterFlowRunId(any_=[uuid4()]),
+        structured_fields=LogFilterStructuredFields(fields={"user_id": 42}),
+    )
+    assert not log_matches_filter(structured_log, run_conflict)
 
 
 def test_log_matches_filter_empty():

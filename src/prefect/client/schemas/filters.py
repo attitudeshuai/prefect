@@ -2,10 +2,10 @@
 Schemas that define Prefect REST API filtering operations.
 """
 
-from typing import ClassVar, List, Optional
+from typing import Any, ClassVar, List, Optional
 from uuid import UUID
 
-from pydantic import ConfigDict, Field
+from pydantic import ConfigDict, Field, field_validator
 
 from prefect._internal.schemas.bases import PrefectBaseModel
 from prefect.client.schemas.objects import StateType
@@ -699,6 +699,34 @@ class LogFilterTextSearch(PrefectBaseModel):
     )
 
 
+class LogFilterStructuredFields(PrefectBaseModel):
+    """Filter by caller-provided structured log fields."""
+
+    fields: dict[str, Any] = Field(
+        default_factory=dict,
+        description=(
+            "Only include logs whose structured fields match every entry. "
+            "Each key is a top-level structured field name and each value "
+            "must be a scalar JSON value (string, number, boolean, or null); "
+            "all entries must match."
+        ),
+        examples=[{"user_id": 42, "region": "us-east-1"}],
+    )
+
+    @field_validator("fields")
+    @classmethod
+    def _validate_scalar_fields(cls, value: dict[str, Any]) -> dict[str, Any]:
+        for key, expected in value.items():
+            if not isinstance(key, str) or not key:
+                raise ValueError("Structured field names must be non-empty strings.")
+            if not isinstance(expected, (str, int, float, bool, type(None))):
+                raise ValueError(
+                    f"Expected a scalar JSON value for structured field "
+                    f"{key!r}, got {type(expected).__name__!r}."
+                )
+        return value
+
+
 class LogFilter(PrefectBaseModel, OperatorMixin):
     """Filter logs. Only logs matching all criteria will be returned"""
 
@@ -716,6 +744,10 @@ class LogFilter(PrefectBaseModel, OperatorMixin):
     )
     text: Optional[LogFilterTextSearch] = Field(
         default=None, description="Filter criteria for text search across log content"
+    )
+    structured_fields: Optional[LogFilterStructuredFields] = Field(
+        default=None,
+        description="Filter criteria for caller-provided structured log fields",
     )
 
 

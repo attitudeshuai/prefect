@@ -72,7 +72,16 @@ async def create_logs(
         full_logs = [schemas.core.Log(**log.model_dump()) for log in logs]
         await session.execute(
             db.queries.insert(db.Log).values(
-                [log.model_dump(exclude={"created", "updated"}) for log in full_logs]
+                [
+                    {
+                        **log.model_dump(exclude={"created", "updated"}),
+                        # Rows without structured fields omit the key when
+                        # dumped; provide it explicitly so every row in the
+                        # batch binds the same set of columns.
+                        "structured_fields": log.structured_fields,
+                    }
+                    for log in full_logs
+                ]
             )
         )
         await messaging.publish_logs(full_logs)

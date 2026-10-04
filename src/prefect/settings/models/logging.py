@@ -66,7 +66,7 @@ class LoggingToAPISettings(PrefectBaseSettings):
         default="warn",
         description="""
         Controls the behavior when loggers attempt to send logs to the API handler from outside of a flow.
-        
+
         All logs sent to the API must be associated with a flow run. The API log handler can
         only be used outside of a flow by manually providing a flow run identifier. Logs
         that are not associated with a flow run will not be sent to the API. This setting can
@@ -78,6 +78,37 @@ class LoggingToAPISettings(PrefectBaseSettings):
         - "error": Raise an error.
         - "ignore": Do not log a warning message or raise an error.
         """,
+    )
+
+    structured_fields_enabled: bool = Field(
+        default=False,
+        description=(
+            "If `True`, caller-provided key/value pairs passed to a logger via "
+            "the standard library `extra=` argument are shipped to the API "
+            "alongside each log as structured fields. When `False`, log payloads "
+            "are identical to older clients that did not carry structured fields."
+        ),
+    )
+
+    structured_fields_allowed_keys: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Restricts which caller-provided keys may be shipped as structured "
+            "log fields. An empty list (the default) allows every "
+            "caller-provided key except Prefect and standard library reserved "
+            "attributes; a non-empty list allows only the listed keys."
+        ),
+    )
+
+    structured_fields_max_value_length: int = Field(
+        default=10_000,
+        ge=0,
+        description=(
+            "The maximum length, in characters, of an individual structured "
+            "field value. String values longer than this are truncated per "
+            "item; nested structures keep their shape. A value of `0` replaces "
+            "every string value with a truncation marker."
+        ),
     )
 
     @model_validator(mode="after")

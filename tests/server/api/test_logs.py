@@ -218,3 +218,88 @@ class TestLogSchemaConversionAPI:
             assert published_log.level == 20
             assert published_log.message == "API test message"
             assert published_log.flow_run_id == flow_run_id
+
+
+class TestStructuredFieldsAPI:
+    @pytest.fixture()
+    async def structured_logs(self, client, flow_run_id, task_run_id):
+        payload = [
+            LogCreate(
+                name="prefect.flow_run",
+                level=20,
+                message="structured one",
+                timestamp=NOW,
+                flow_run_id=flow_run_id,
+                structured_fields={
+                    "user_id": 42,
+                    "nested": {"role": "admin", "flags": ["read"]},
+                },
+            ).model_dump(mode="json"),
+            LogCreate(
+                name="prefect.flow_run",
+                level=50,
+                message="structured two",
+                timestamp=(NOW + timedelta(hours=1)),
+                flow_run_id=flow_run_id,
+                task_run_id=task_run_id,
+                structured_fields={"user_id": 7},
+            ).model_dump(mode="json"),
+            LogCreate(
+                name="prefect.flow_run",
+                level=20,
+                message="legacy without structured fields",
+                timestamp=(NOW + timedelta(hours=2)),
+                flow_run_id=flow_run_id,
+            ).model_dump(mode="json"),
+        ]
+        response = await client.post(CREATE_LOGS_URL, json=payload)
+        assert response.status_code == 201
+
+    async def test_structured_fields_round_trip_through_api(
+        self, client, structured_logs, flow_run_id
+    ):
+        body = {
+            "logs": {"flow_run_id": {"any_": [str(flow_run_id)]}},
+            "sort": "TIMESTAMP_ASC",
+        }
+        response = await client.post(READ_LOGS_URL, json=body)
+        assert response.status_code == 200
+        data = response.json()
+
+        assert [log["message"] for log in data] == [
+            "structured one",
+            "structured two",
+            "legacy without structured fields",
+        ]
+        assert data[0]["structured_fields"] == {
+            "user_id": 42,
+            "nested": {"role": "admin", "flags": ["read"]},
+        }
+        assert data[1]["structured_fields"] == {"user_id": 7}
+        # Logs without structured fields serialize identically to older
+        # servers and omit the key entirely.
+        assert "structured_fields" not in data[2]
+
+    async def test_structured_fields_filter_stacks_with_other_filters(
+        self, client, structured_logs, flow_run_id, task_run_id
+    ):
+        body = {
+            "logs": {
+                "flow_run_id": {"any_": [str(flow_run_id)]},
+                "level": {"ge_": 20, "le_": 30},
+                "structured_fields": {"fields": {"user_id": 42}},
+            }
+        }
+        response = await client.post(READ_LOGS_URL, json=body)
+        assert response.status_code == 200
+        data = response.json()
+
+        assert [log["message"] for log in data] == ["structured one"]
+        assert data[0]["task_run_id"] is None
+
+    async def test_non_scalar_structured_filter_value_rejected(
+        self, client, structured_logs
+    ):
+        body = {"logs": {"structured_fields": {"fields": {"nested": {"role": "x"}}}}}
+        response = await client.post(READ_LOGS_URL, json=body)
+        assert response.status_code == 422

@@ -932,6 +932,11 @@ class Log(Base):
     task_run_id: Mapped[Optional[uuid.UUID]] = mapped_column(index=True)
     message: Mapped[str] = mapped_column(sa.Text)
 
+    # Caller-provided structured key/value pairs, shipped by clients that have
+    # structured log fields enabled. Nullable so rows written by older clients
+    # and clients with the feature disabled are stored unchanged.
+    structured_fields: Mapped[Optional[dict[str, Any]]] = mapped_column(JSON)
+
     # The client-side timestamp of this logged statement.
     timestamp: Mapped[DateTime] = mapped_column(index=True)
 

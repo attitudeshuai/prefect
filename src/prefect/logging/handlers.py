@@ -9,7 +9,7 @@ import traceback
 import uuid
 import warnings
 from contextlib import asynccontextmanager
-from typing import TYPE_CHECKING, Any, Callable, Dict, TextIO, Type, cast
+from typing import TYPE_CHECKING, Any, Callable, Dict, Optional, TextIO, Type, cast
 
 from rich.console import Console
 from rich.highlighter import Highlighter, NullHighlighter
@@ -24,6 +24,7 @@ from prefect.client.orchestration import get_client
 from prefect.client.schemas.actions import LogCreate
 from prefect.exceptions import MissingContextError
 from prefect.logging.highlighters import PrefectConsoleHighlighter
+from prefect.logging.structured import extract_structured_fields
 from prefect.settings import (
     PREFECT_API_URL,
     PREFECT_LOGGING_COLORS,
@@ -32,6 +33,9 @@ from prefect.settings import (
     PREFECT_LOGGING_TO_API_BATCH_INTERVAL,
     PREFECT_LOGGING_TO_API_BATCH_SIZE,
     PREFECT_LOGGING_TO_API_MAX_LOG_SIZE,
+    PREFECT_LOGGING_TO_API_STRUCTURED_FIELDS_ALLOWED_KEYS,
+    PREFECT_LOGGING_TO_API_STRUCTURED_FIELDS_ENABLED,
+    PREFECT_LOGGING_TO_API_STRUCTURED_FIELDS_MAX_VALUE_LENGTH,
     PREFECT_LOGGING_TO_API_WHEN_MISSING_FLOW,
 )
 from prefect.types._datetime import from_timestamp
@@ -62,6 +66,27 @@ def emit_api_log(log: Dict[str, Any]) -> None:
         return
 
     APILogWorker.instance().send(log)
+
+
+def _extract_record_structured_fields(
+    record: logging.LogRecord,
+) -> Optional[Dict[str, Any]]:
+    """
+    Extract caller-provided structured fields from a log record when the
+    feature is enabled. Returns `None` when disabled or when no eligible
+    fields are present, keeping log payloads identical to older clients.
+    """
+    if not PREFECT_LOGGING_TO_API_STRUCTURED_FIELDS_ENABLED.value():
+        return None
+
+    fields = extract_structured_fields(
+        record,
+        allowed_keys=PREFECT_LOGGING_TO_API_STRUCTURED_FIELDS_ALLOWED_KEYS.value(),
+        max_value_length=(
+            PREFECT_LOGGING_TO_API_STRUCTURED_FIELDS_MAX_VALUE_LENGTH.value()
+        ),
+    )
+    return fields or None
 
 
 class APILogWorker(BatchedQueueService[Dict[str, Any]]):
@@ -250,6 +275,7 @@ class APILogHandler(logging.Handler):
                 flow_run_id = None
 
         formatted_message = self.format(record)
+        structured_fields = _extract_record_structured_fields(record)
 
         log = LogCreate(
             flow_run_id=flow_run_id,
@@ -259,6 +285,7 @@ class APILogHandler(logging.Handler):
             level=record.levelno,
             timestamp=from_timestamp(getattr(record, "created", None) or time.time()),  # pyright: ignore[reportArgumentType]
             message=formatted_message,
+            structured_fields=structured_fields,
         ).model_dump(mode="json")
 
         log_size = log["__payload_size__"] = self._get_payload_size(log)
@@ -279,6 +306,7 @@ class APILogHandler(logging.Handler):
                     getattr(record, "created", None) or time.time()  # pyright: ignore[reportArgumentType] DateTime is split into two types depending on Python version
                 ),
                 message=truncated_message,
+                structured_fields=structured_fields,
             ).model_dump(mode="json")
 
             log["__payload_size__"] = self._get_payload_size(log)
@@ -315,6 +343,7 @@ class WorkerAPILogHandler(APILogHandler):
             level=record.levelno,
             timestamp=from_timestamp(getattr(record, "created", None) or time.time()),  # pyright: ignore[reportArgumentType] DateTime is split into two types depending on Python version
             message=self.format(record),
+            structured_fields=_extract_record_structured_fields(record),
         ).model_dump(mode="json")
 
         log_size = log["__payload_size__"] = self._get_payload_size(log)

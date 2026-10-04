@@ -1395,6 +1395,23 @@ class Log(TimeSeriesBaseModel, ObjectBaseModel):
     task_run_id: Optional[UUID] = Field(
         default=None, description="The task run ID associated with the log."
     )
+    structured_fields: Optional[dict[str, Any]] = Field(
+        default=None,
+        description=(
+            "Caller-provided structured key/value pairs associated with the "
+            "log. `None` for logs that were written without structured fields."
+        ),
+    )
+
+    def model_dump(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
+        """
+        Omit `structured_fields` when unset so logs without structured fields
+        serialize identically to older server responses.
+        """
+        data = super().model_dump(*args, **kwargs)
+        if self.structured_fields is None:
+            data.pop("structured_fields", None)
+        return data
 
 
 class QueueFilter(PrefectBaseModel):

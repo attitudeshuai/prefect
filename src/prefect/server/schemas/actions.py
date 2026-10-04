@@ -879,6 +879,25 @@ class LogCreate(ActionBaseModel):
     timestamp: DateTime = Field(default=..., description="The log timestamp.")
     flow_run_id: Optional[UUID] = Field(None)
     task_run_id: Optional[UUID] = Field(None)
+    structured_fields: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description=(
+            "Caller-provided structured key/value pairs attached to the log "
+            "record. Absent for older clients that do not carry structured "
+            "fields."
+        ),
+    )
+
+    def model_dump(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
+        """
+        Omit `structured_fields` when unset so create-path payloads keep the
+        same shape as logs written by older clients that did not carry
+        structured fields.
+        """
+        data = super().model_dump(*args, **kwargs)
+        if self.structured_fields is None:
+            data.pop("structured_fields")
+        return data
 
 
 def validate_base_job_template(v: dict[str, Any]) -> dict[str, Any]:

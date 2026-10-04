@@ -325,6 +325,14 @@ SUPPORTED_SETTINGS = {
     "PREFECT_LOGGING_TO_API_BATCH_SIZE": {"test_value": 5_000_000},
     "PREFECT_LOGGING_TO_API_ENABLED": {"test_value": True},
     "PREFECT_LOGGING_TO_API_MAX_LOG_SIZE": {"test_value": 10},
+    "PREFECT_LOGGING_TO_API_STRUCTURED_FIELDS_ALLOWED_KEYS": {
+        "test_value": '["user_id", "region"]',
+        "expected_value": ["user_id", "region"],
+    },
+    "PREFECT_LOGGING_TO_API_STRUCTURED_FIELDS_ENABLED": {"test_value": True},
+    "PREFECT_LOGGING_TO_API_STRUCTURED_FIELDS_MAX_VALUE_LENGTH": {
+        "test_value": 42
+    },
     "PREFECT_LOGGING_TO_API_WHEN_MISSING_FLOW": {"test_value": "ignore"},
     "PREFECT_MEMOIZE_BLOCK_AUTO_REGISTRATION": {"test_value": True, "legacy": True},
     "PREFECT_MEMO_STORE_PATH": {"test_value": Path("/path/to/memo"), "legacy": True},

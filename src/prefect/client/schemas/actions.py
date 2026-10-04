@@ -774,15 +774,29 @@ class LogCreate(ActionBaseModel):
     flow_run_id: Optional[UUID] = Field(default=None)
     task_run_id: Optional[UUID] = Field(default=None)
     worker_id: Optional[UUID] = Field(default=None)
+    structured_fields: Optional[dict[str, Any]] = Field(
+        default=None,
+        description=(
+            "Caller-provided structured key/value pairs attached to the log "
+            "record. Only populated when "
+            "`PREFECT_LOGGING_TO_API_STRUCTURED_FIELDS_ENABLED` is enabled; "
+            "otherwise the field is omitted from log payloads entirely."
+        ),
+    )
 
     def model_dump(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
         """
         The worker_id field is only included in logs sent to Prefect Cloud.
         If it's unset, we should not include it in the log payload.
+
+        The structured_fields field is omitted when unset so that payloads
+        stay byte-identical to older clients while the feature is disabled.
         """
         data = super().model_dump(*args, **kwargs)
         if self.worker_id is None:
             data.pop("worker_id")
+        if self.structured_fields is None:
+            data.pop("structured_fields")
         return data
 
 

@@ -143,6 +143,17 @@ def log_matches_filter(log: Log, filter: LogFilter) -> bool:
             if filter.task_run_id.is_null_ != is_null:
                 return False
 
+    # Check structured fields filter
+    if filter.structured_fields and filter.structured_fields.fields:
+        from prefect.server.schemas.filters import structured_scalar_matches
+
+        structured_fields = log.structured_fields or {}
+        for key, expected in filter.structured_fields.fields.items():
+            if not structured_scalar_matches(
+                structured_fields.get(key), expected
+            ):
+                return False
+
     return True
 
 

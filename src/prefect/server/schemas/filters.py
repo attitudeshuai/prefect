@@ -5,10 +5,10 @@ Each filter schema includes logic for transforming itself into a SQL `where` cla
 """
 
 from collections.abc import Iterable, Sequence
-from typing import TYPE_CHECKING, ClassVar, Optional
+from typing import TYPE_CHECKING, Any, ClassVar, Optional
 from uuid import UUID
 
-from pydantic import ConfigDict, Field
+from pydantic import ConfigDict, Field, field_validator
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.sql.functions import coalesce
 
@@ -1589,6 +1589,92 @@ class LogFilterTextSearch(PrefectFilterBaseModel):
         return filters
 
 
+def structured_scalar_matches(actual: Any, expected: Any) -> bool:
+    """
+    Compare a stored structured field value against a scalar filter value.
+
+    Mirrors the SQL semantics emitted by `LogFilterStructuredFields`: booleans
+    are matched strictly, integers and floats compare numerically with one
+    another, and `None` matches a JSON null or a missing key.
+    """
+    if expected is None:
+        return actual is None
+    if isinstance(expected, bool):
+        return isinstance(actual, bool) and actual == expected
+    if isinstance(expected, (int, float)):
+        return (
+            isinstance(actual, (int, float))
+            and not isinstance(actual, bool)
+            and actual == expected
+        )
+    if isinstance(expected, str):
+        return isinstance(actual, str) and actual == expected
+    return False
+
+
+class LogFilterStructuredFields(PrefectFilterBaseModel):
+    """Filter by caller-provided structured log fields."""
+
+    fields: dict[str, Any] = Field(
+        default_factory=dict,
+        description=(
+            "Only include logs whose structured fields match every entry. "
+            "Each key is a top-level structured field name and each value "
+            "must be a scalar JSON value (string, number, boolean, or null); "
+            "all entries must match."
+        ),
+        examples=[{"user_id": 42, "region": "us-east-1"}],
+    )
+
+    @field_validator("fields")
+    @classmethod
+    def _validate_scalar_fields(cls, value: dict[str, Any]) -> dict[str, Any]:
+        for key, expected in value.items():
+            if not isinstance(key, str) or not key:
+                raise ValueError("Structured field names must be non-empty strings.")
+            if not isinstance(expected, (str, int, float, bool, type(None))):
+                raise ValueError(
+                    f"Expected a scalar JSON value for structured field "
+                    f"{key!r}, got {type(expected).__name__!r}."
+                )
+        return value
+
+    def includes(self, log: "Log") -> bool:
+        """Check if the structured field filter includes the given log."""
+        from prefect.server.schemas.core import Log as CoreLog
+
+        if not isinstance(log, CoreLog):
+            raise TypeError(f"Expected Log object, got {type(log)}")
+
+        actual_fields = log.structured_fields or {}
+        for key, expected in self.fields.items():
+            actual = actual_fields.get(key)
+            if not structured_scalar_matches(actual, expected):
+                return False
+        return True
+
+    def _get_filter_list(
+        self, db: "PrefectDBInterface"
+    ) -> Iterable[sa.ColumnExpressionArgument[bool]]:
+        filters: list[sa.ColumnExpressionArgument[bool]] = []
+
+        for key, expected in self.fields.items():
+            element = db.Log.structured_fields[key]
+            if expected is None:
+                # Both a missing key and an explicit JSON null extract as NULL.
+                filters.append(element.astext.is_(None))
+            elif isinstance(expected, bool):
+                filters.append(element.as_boolean().is_(expected))
+            elif isinstance(expected, int):
+                filters.append(element.as_integer() == expected)
+            elif isinstance(expected, float):
+                filters.append(element.as_float() == expected)
+            else:
+                filters.append(element.as_string() == expected)
+
+        return filters
+
+
 class LogFilter(PrefectOperatorFilterBaseModel):
     """Filter logs. Only logs matching all criteria will be returned"""
 
@@ -1607,6 +1693,10 @@ class LogFilter(PrefectOperatorFilterBaseModel):
     text: Optional[LogFilterTextSearch] = Field(
         default=None, description="Filter criteria for text search across log content"
     )
+    structured_fields: Optional[LogFilterStructuredFields] = Field(
+        default=None,
+        description="Filter criteria for caller-provided structured log fields",
+    )
 
     def _get_filter_list(
         self, db: "PrefectDBInterface"
@@ -1623,6 +1713,8 @@ class LogFilter(PrefectOperatorFilterBaseModel):
             filters.append(self.task_run_id.as_sql_filter())
         if self.text is not None:
             filters.extend(self.text._get_filter_list(db))
+        if self.structured_fields is not None:
+            filters.extend(self.structured_fields._get_filter_list(db))
 
         return filters
 

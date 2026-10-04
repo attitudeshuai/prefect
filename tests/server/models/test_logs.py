@@ -11,7 +11,10 @@ from prefect.server.schemas.core import Log
 from prefect.server.schemas.filters import (
     LogFilter,
     LogFilterFlowRunId,
+    LogFilterLevel,
+    LogFilterStructuredFields,
     LogFilterTaskRunId,
+    LogFilterTimestamp,
 )
 from prefect.server.schemas.sorting import LogSort
 from prefect.types._datetime import now
@@ -278,3 +281,174 @@ class TestDeleteLogs:
 
         logs = await models.logs.read_logs(session=session, log_filter=log_filter)
         assert len(logs) == 0, logs
+
+
+@pytest.fixture
+def structured_log_data(flow_run_id, other_flow_run_id, task_run_id):
+    yield [
+        LogCreate(
+            name="prefect.flow_run",
+            level=20,
+            message="structured log one",
+            timestamp=NOW,
+            flow_run_id=flow_run_id,
+            structured_fields={
+                "user_id": 42,
+                "region": "us-east-1",
+                "active": True,
+                "score": 9.5,
+                "empty": None,
+                "nested": {"role": "admin", "flags": ["read", "write"]},
+            },
+        ),
+        LogCreate(
+            name="prefect.flow_run",
+            level=40,
+            message="structured log two",
+            timestamp=(NOW + timedelta(minutes=30)),
+            flow_run_id=flow_run_id,
+            structured_fields={
+                "user_id": 7,
+                "region": "eu-west-1",
+                "active": False,
+                "score": 1.0,
+                "nested": {"role": "viewer"},
+            },
+        ),
+        LogCreate(
+            name="prefect.flow_run",
+            level=20,
+            message="other run log",
+            timestamp=(NOW + timedelta(hours=1)),
+            flow_run_id=other_flow_run_id,
+            structured_fields={"user_id": 42, "region": "us-east-1"},
+        ),
+        LogCreate(
+            name="prefect.flow_run",
+            level=20,
+            message="legacy log without structured fields",
+            timestamp=(NOW + timedelta(hours=2)),
+            flow_run_id=flow_run_id,
+        ),
+    ]
+
+
+class TestStructuredFieldsPersistence:
+    async def test_structured_fields_round_trip_with_shape(
+        self, session, flow_run_id, structured_log_data
+    ):
+        await models.logs.create_logs(session=session, logs=structured_log_data)
+
+        read = await models.logs.read_logs(session=session, log_filter=None)
+        by_message = {log.message: log for log in read}
+
+        one = by_message["structured log one"]
+        assert one.structured_fields == {
+            "user_id": 42,
+            "region": "us-east-1",
+            "active": True,
+            "score": 9.5,
+            "empty": None,
+            "nested": {"role": "admin", "flags": ["read", "write"]},
+        }
+        legacy = by_message["legacy log without structured fields"]
+        assert legacy.structured_fields is None
+
+
+class TestReadLogsStructuredFieldsFilter:
+    @pytest.fixture
+    async def created_structured_logs(self, session, structured_log_data):
+        await models.logs.create_logs(session=session, logs=structured_log_data)
+
+    async def test_filter_by_string_value(
+        self, session, flow_run_id, created_structured_logs
+    ):
+        log_filter = LogFilter(
+            structured_fields=LogFilterStructuredFields(
+                fields={"region": "us-east-1"}
+            )
+        )
+        result = await models.logs.read_logs(session=session, log_filter=log_filter)
+        assert {log.message for log in result} == {
+            "structured log one",
+            "other run log",
+        }
+
+    async def test_filter_by_integer_value(
+        self, session, flow_run_id, created_structured_logs
+    ):
+        log_filter = LogFilter(
+            structured_fields=LogFilterStructuredFields(fields={"user_id": 42})
+        )
+        result = await models.logs.read_logs(session=session, log_filter=log_filter)
+        assert {log.message for log in result} == {
+            "structured log one",
+            "other run log",
+        }
+
+    async def test_filter_by_boolean_value(self, session, created_structured_logs):
+        log_filter = LogFilter(
+            structured_fields=LogFilterStructuredFields(fields={"active": True})
+        )
+        result = await models.logs.read_logs(session=session, log_filter=log_filter)
+        assert [log.message for log in result] == ["structured log one"]
+
+    async def test_filter_by_float_value(self, session, created_structured_logs):
+        log_filter = LogFilter(
+            structured_fields=LogFilterStructuredFields(fields={"score": 9.5})
+        )
+        result = await models.logs.read_logs(session=session, log_filter=log_filter)
+        assert [log.message for log in result] == ["structured log one"]
+
+    async def test_filter_by_null_value_matches_missing_and_null(
+        self, session, created_structured_logs
+    ):
+        log_filter = LogFilter(
+            structured_fields=LogFilterStructuredFields(fields={"empty": None})
+        )
+        result = await models.logs.read_logs(session=session, log_filter=log_filter)
+        # Explicit JSON null ("one") and a missing key ("two", "other run",
+        # "legacy") all extract as NULL.
+        assert len(result) == 4
+
+    async def test_multiple_fields_are_and_ed(self, session, created_structured_logs):
+        log_filter = LogFilter(
+            structured_fields=LogFilterStructuredFields(
+                fields={"user_id": 42, "region": "us-east-1"}
+            )
+        )
+        result = await models.logs.read_logs(session=session, log_filter=log_filter)
+        assert {log.message for log in result} == {
+            "structured log one",
+            "other run log",
+        }
+
+    async def test_structured_filter_stacks_with_run_level_and_time(
+        self, session, flow_run_id, created_structured_logs
+    ):
+        log_filter = LogFilter(
+            flow_run_id=LogFilterFlowRunId(any_=[flow_run_id]),
+            level=LogFilterLevel(ge_=20, le_=30),
+            timestamp=LogFilterTimestamp(after_=NOW - timedelta(minutes=1)),
+            structured_fields=LogFilterStructuredFields(fields={"user_id": 42}),
+        )
+        result = await models.logs.read_logs(
+            session=session, log_filter=log_filter, sort=LogSort.TIMESTAMP_ASC
+        )
+        # The other-flow-run match and the level-40/missing-key rows are
+        # excluded by the run/level filters even though their business key
+        # value matches.
+        assert [log.message for log in result] == ["structured log one"]
+
+    async def test_non_matching_value_returns_nothing(
+        self, session, created_structured_logs
+    ):
+        log_filter = LogFilter(
+            structured_fields=LogFilterStructuredFields(fields={"user_id": 999})
+        )
+        result = await models.logs.read_logs(session=session, log_filter=log_filter)
+        assert result == []
+
+    async def test_non_scalar_filter_value_rejected(self):
+        with pytest.raises(ValueError, match="scalar JSON value"):
+            LogFilterStructuredFields(fields={"nested": {"role": "admin"}})
