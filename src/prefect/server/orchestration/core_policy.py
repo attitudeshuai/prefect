@@ -332,6 +332,11 @@ class SecureTaskConcurrencySlots(TaskRunOrchestrationRule):
         settings = get_current_settings()
         self._applied_limits: list[str] = []
         self._acquired_v2_lease_ids: list[UUID] = []
+
+        if context.dry_run:
+            await self._before_transition_preview(initial_state, proposed_state, context)
+            return
+
         v1_limits = (
             await concurrency_limits.filter_concurrency_limits_for_orchestration(
                 context.session, tags=context.run.tags
@@ -468,6 +473,98 @@ class SecureTaskConcurrencySlots(TaskRunOrchestrationRule):
                     active_slots = set(cl.active_slots)
                     active_slots.add(str(context.run.id))
                     cl.active_slots = list(active_slots)
+
+    async def _before_transition_preview(
+        self,
+        initial_state: states.State[Any] | None,
+        proposed_state: states.State[Any] | None,
+        context: OrchestrationContext[orm_models.TaskRun, core.TaskRunPolicy],
+    ) -> None:
+        """
+        Read-only counterpart of `before_transition`.
+
+        Produces the same abort/delay/accept verdict against the current v1/v2
+        tag concurrency limits without incrementing slot counts, creating or
+        renewing leases, or mutating any limit. Capacity is evaluated as of the
+        time of the read only.
+        """
+        settings = get_current_settings()
+
+        v1_limits = (
+            await concurrency_limits.filter_concurrency_limits_for_orchestration(
+                context.session, tags=context.run.tags
+            )
+        )
+        v2_names = [f"tag:{tag}" for tag in context.run.tags]
+        v2_limits = await concurrency_limits_v2.bulk_read_concurrency_limits(
+            context.session, names=v2_names
+        )
+
+        v2_tags: set[str] = set()
+        if v2_limits:
+            v2_tags = {
+                limit.name.removeprefix("tag:") for limit in v2_limits if limit.active
+            }
+
+            # A zero active limit aborts in the real submission as well.
+            for limit in v2_limits:
+                if limit.active and limit.limit == 0:
+                    await self.abort_transition(
+                        reason=f'The concurrency limit on tag "{limit.name.removeprefix("tag:")}" is 0 and will deadlock if the task tries to run again.',
+                    )
+                    return
+
+            active_v2_limits = [
+                limit for limit in v2_limits if limit.active and limit.limit > 0
+            ]
+            if active_v2_limits:
+                acquired = await concurrency_limits_v2.slots_are_available(
+                    session=context.session,
+                    concurrency_limit_ids=[limit.id for limit in active_v2_limits],
+                    slots=1,
+                )
+                if not acquired:
+                    max_wait = (
+                        settings.server.tasks.tag_concurrency_slot_wait_seconds
+                    )
+                    blocking_limit = max(
+                        active_v2_limits,
+                        key=lambda lim: lim.active_slots / lim.limit,
+                    )
+                    average_interval = min(
+                        blocking_limit.avg_slot_occupancy_seconds or max_wait,
+                        max_wait,
+                    )
+                    delay_seconds = clamped_poisson_interval(
+                        average_interval=average_interval,
+                    )
+                    await self.delay_transition(
+                        delay_seconds=round(delay_seconds),
+                        reason=f"Concurrency limit reached for tags: {', '.join([limit.name.removeprefix('tag:') for limit in active_v2_limits])}",
+                    )
+                    return
+
+        # V1 limits only apply when no V2 limit exists for the tag.
+        remaining_v1_limits = [
+            limit for limit in v1_limits if limit.tag not in v2_tags
+        ]
+        for cl in remaining_v1_limits:
+            if cl.concurrency_limit == 0:
+                await self.abort_transition(
+                    reason=(
+                        f'The concurrency limit on tag "{cl.tag}" is 0 and will'
+                        " deadlock if the task tries to run again."
+                    )
+                )
+                return
+            elif len(cl.active_slots) >= cl.concurrency_limit:
+                await self.delay_transition(
+                    delay_seconds=int(
+                        settings.server.tasks.tag_concurrency_slot_wait_seconds
+                    ),
+                    reason=f"Concurrency limit for the {cl.tag} tag has been reached",
+                )
+                return
 
     async def cleanup(
         self,
@@ -614,6 +711,52 @@ class SecureFlowConcurrencySlots(FlowRunOrchestrationRule):
             await self.abort_transition(
                 "The deployment concurrency limit is 0. The flow will deadlock if submitted again."
             )
+            return
+
+        if context.dry_run:
+            # Probe capacity without reserving a slot or minting a lease. The
+            # verdict matches a real submission at the time of the read.
+            slots_available = await concurrency_limits_v2.slots_are_available(
+                session=context.session,
+                concurrency_limit_ids=[deployment.concurrency_limit_id],
+                slots=1,
+            )
+            if slots_available:
+                return
+            self._acquired_deployment_concurrency_limit_id = None
+            self._acquired_deployment_concurrency_lease_id = None
+            concurrency_options = (
+                deployment.concurrency_options
+                or core.ConcurrencyOptions(
+                    collision_strategy=core.ConcurrencyLimitStrategy.ENQUEUE
+                )
+            )
+
+            if (
+                concurrency_options.collision_strategy
+                == core.ConcurrencyLimitStrategy.ENQUEUE
+            ):
+                settings = get_current_settings()
+                await self.reject_transition(
+                    state=states.Scheduled(
+                        name="AwaitingConcurrencySlot",
+                        scheduled_time=now("UTC")
+                        + datetime.timedelta(
+                            seconds=settings.server.deployments.concurrency_slot_wait_seconds
+                        ),
+                    ),
+                    reason="Deployment concurrency limit reached.",
+                )
+            elif (
+                concurrency_options.collision_strategy
+                == core.ConcurrencyLimitStrategy.CANCEL_NEW
+            ):
+                await self.reject_transition(
+                    state=states.Cancelled(
+                        message="Deployment concurrency limit reached."
+                    ),
+                    reason="Deployment concurrency limit reached.",
+                )
             return
 
         acquired = await concurrency_limits_v2.bulk_increment_active_slots(
@@ -783,6 +926,30 @@ class ValidateDeploymentConcurrencyAtRunning(FlowRunOrchestrationRule):
         if grace_period is None:
             settings = get_current_settings()
             grace_period = settings.server.concurrency.initial_deployment_lease_duration
+
+        if context.dry_run:
+            # Inspect lease health and capacity without renewing the lease,
+            # re-acquiring a slot, or minting a replacement lease.
+            lease_storage = get_concurrency_lease_storage()
+            if await lease_storage.read_lease(lease_id=lease_id):
+                return
+
+            slots_available = await concurrency_limits_v2.slots_are_available(
+                session=context.session,
+                concurrency_limit_ids=[deployment.concurrency_limit_id],
+                slots=1,
+            )
+            if slots_available:
+                return
+
+            await self.reject_transition(
+                state=states.Cancelled(
+                    message="Deployment concurrency slot lost during provisioning - "
+                    "no slots available to continue execution"
+                ),
+                reason="Deployment concurrency limit reached after lease expiry.",
+            )
+            return
 
         # Attempt atomic renewal to prevent race conditions where the lease
         # exists but hasn't expired yet
@@ -1104,7 +1271,7 @@ class RetryFailedFlows(FlowRunOrchestrationRule):
         # older flow retries require us to loop over failed tasks to update their state
         # this is not required after API version 0.8.3
         api_version = context.parameters.get("api-version", None)
-        if api_version and api_version < Version("0.8.3"):
+        if api_version and api_version < Version("0.8.3") and not context.dry_run:
             failed_task_runs = await models.task_runs.read_task_runs(
                 context.session,
                 flow_run_filter=filters.FlowRunFilter(

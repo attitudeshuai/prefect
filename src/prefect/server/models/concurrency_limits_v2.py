@@ -280,6 +280,37 @@ async def bulk_increment_active_slots(
 
 
 @db_injector
+async def slots_are_available(
+    db: PrefectDBInterface,
+    session: AsyncSession,
+    concurrency_limit_ids: List[UUID],
+    slots: int,
+) -> bool:
+    """
+    Read-only counterpart of `bulk_increment_active_slots`.
+
+    Evaluates the exact same capacity predicate (active limits whose decayed
+    active slot count has room for `slots`) without issuing an UPDATE, so it can
+    be used by the state transition precheck. Reflects capacity as of the time
+    of the read only; it does not reserve anything.
+    """
+    if not concurrency_limit_ids:
+        return True
+
+    active_slots = active_slots_after_decay(db)
+
+    query = sa.select(sa.func.count()).select_from(db.ConcurrencyLimitV2).where(
+        sa.and_(
+            db.ConcurrencyLimitV2.id.in_(concurrency_limit_ids),
+            db.ConcurrencyLimitV2.active == True,  # noqa
+            active_slots + slots <= db.ConcurrencyLimitV2.limit,
+        )
+    )
+    available = await session.scalar(query)
+    return available == len(concurrency_limit_ids)
+
+
+@db_injector
 async def bulk_decrement_active_slots(
     db: PrefectDBInterface,
     session: AsyncSession,

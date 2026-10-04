@@ -120,6 +120,14 @@ class OrchestrationContext(PrefectBaseModel, Generic[T, RP]):
     orchestration_error: Optional[Exception] = Field(default=None)
     parameters: dict[Any, Any] = Field(default_factory=dict)
     client_version: Optional[str] = None
+    dry_run: bool = Field(
+        default=False,
+        description=(
+            "When True, orchestration rules are fully evaluated to produce a"
+            " verdict, but no state is committed, no run bookkeeping is persisted,"
+            " and no concurrency capacity is acquired or released."
+        ),
+    )
     run: T
 
     @property
@@ -207,6 +215,21 @@ class OrchestrationContext(PrefectBaseModel, Generic[T, RP]):
     async def flow_run(self) -> orm_models.FlowRun | None:
         raise NotImplementedError("Flow run is not supported for this context")
 
+    def validate_proposed_state_dry_run(self) -> None:
+        """
+        Produce a `validated_state` for a read-only precheck without writing it.
+
+        A dry-run evaluation runs every orchestration rule so that the verdict
+        (accept/reject/wait/abort and any rewritten state) matches a real
+        submission, but it must not create a state row, an artifact, or any
+        other database record. The governed proposed state is detached into a
+        fresh copy and reported as the state that *would* be committed.
+        """
+        if self.proposed_state is None:
+            self.validated_state = None
+        else:
+            self.validated_state = self.proposed_state.model_copy(deep=True)
+
 
 class FlowOrchestrationContext(
     OrchestrationContext[orm_models.FlowRun, core.FlowRunPolicy]
@@ -269,6 +292,10 @@ class FlowOrchestrationContext(
         """
         # (circular import)
         from prefect.server.api.server import is_client_retryable_exception
+
+        if self.dry_run:
+            self.validate_proposed_state_dry_run()
+            return
 
         try:
             await self._validate_proposed_state()
@@ -426,6 +453,10 @@ class TaskOrchestrationContext(
         """
         # (circular import)
         from prefect.server.api.server import is_client_retryable_exception
+
+        if self.dry_run:
+            self.validate_proposed_state_dry_run()
+            return
 
         try:
             await self._validate_proposed_state()
@@ -683,6 +714,12 @@ class BaseOrchestrationRule(
         on exit, the rule will "fizzle" and `self.cleanup` will fire in order to revert
         any side-effects produced by `self.before_transition`.
         """
+
+        if self.context.dry_run:
+            # A precheck must have no exit-time side effects: states are not
+            # committed, concurrency capacity is not acquired or released, events
+            # are not emitted, and caches/queues/parent runs are not written to.
+            return
 
         exit_context = self.context.exit_context()
         if await self.invalid():
@@ -1036,6 +1073,10 @@ class BaseUniversalTransform(
         nothing happens. Otherwise, `self.after_transition` will fire on every non-null
         proposed state.
         """
+
+        if self.context.dry_run:
+            # Prechecks never run after-transition bookkeeping.
+            return
 
         if not self.exception_in_transition():
             await self.after_transition(self.context)

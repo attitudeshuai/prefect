@@ -675,6 +675,96 @@ async def set_flow_run_state(
     return result
 
 
+async def preview_flow_run_state(
+    session: AsyncSession,
+    flow_run_id: UUID,
+    state: schemas.states.State,
+    force: bool = False,
+    flow_policy: Optional[Type[FlowRunOrchestrationPolicy]] = None,
+    orchestration_parameters: Optional[Dict[str, Any]] = None,
+    client_version: Optional[str] = None,
+    current_state: Optional[schemas.states.State] = None,
+) -> OrchestrationResult:
+    """
+    Evaluate the orchestration verdict for a flow run state transition without
+    committing it.
+
+    This mirrors `set_flow_run_state`: the same policies compile the same rules
+    and every `before_transition` hook runs, so the returned status, details,
+    and governed state match a real submission made at the same time. Nothing
+    is written to the database (the caller is responsible for rolling back the
+    session transaction), run bookkeeping is not persisted, and concurrency
+    capacity is probed read-only rather than acquired.
+
+    Args:
+        session: a database session; any flushed changes are rolled back by
+            the caller
+        flow_run_id: the flow run id
+        state: the proposed flow run state
+        force: if True, evaluate with `MinimalFlowPolicy`, matching a forced
+            real submission
+        flow_policy: an optional override policy
+        orchestration_parameters: parameters passed to orchestration rules
+        client_version: the Prefect client version, when available
+        current_state: an optional caller-held snapshot of the run's current
+            state. When provided, it must match the server's current state or
+            `StaleStateSnapshotError` is raised.
+
+    Returns:
+        OrchestrationResult with the verdict and the state that would be
+        committed
+    """
+    from prefect.server.orchestration.preview import (
+        run_transition_preview,
+        verify_state_snapshot,
+    )
+
+    run = await models.flow_runs.read_flow_run(
+        session=session,
+        flow_run_id=flow_run_id,
+    )
+
+    if not run:
+        raise ObjectNotFoundError(f"Flow run with id {flow_run_id} not found")
+
+    await verify_state_snapshot(run, current_state)
+
+    initial_state = run.state.as_state() if run.state else None
+    initial_state_type = initial_state.type if initial_state else None
+    proposed_state_type = state.type if state else None
+    intended_transition = (initial_state_type, proposed_state_type)
+
+    if force or flow_policy is None:
+        flow_policy = MinimalFlowPolicy
+
+    context = FlowOrchestrationContext(
+        session=session,
+        run=run,
+        initial_state=initial_state,
+        proposed_state=state,
+        client_version=client_version,
+        dry_run=True,
+    )
+
+    if orchestration_parameters is not None:
+        context.parameters = orchestration_parameters
+
+    context = await run_transition_preview(
+        context=context,
+        policy=flow_policy,
+        global_policy=GlobalFlowPolicy,
+        intended_transition=intended_transition,
+    )
+
+    # A rule hook that errored produced an ABORT verdict on the context; the
+    # precheck reports the verdict rather than failing the request.
+    return OrchestrationResult(
+        state=context.validated_state,
+        status=context.response_status,
+        details=context.response_details,
+    )
+
+
 @db_injector
 async def read_flow_run_graph(
     db: PrefectDBInterface,

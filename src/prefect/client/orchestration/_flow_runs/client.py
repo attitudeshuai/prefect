@@ -416,6 +416,45 @@ class FlowRunClient(BaseClient):
         )
         return result
 
+    def preview_state_transitions(
+        self,
+        transitions: list[Any],
+    ) -> Any:
+        """
+        Precheck one or more flow/task run state transitions without committing.
+
+        Args:
+            transitions: a list of `StateTransitionPreviewItem` objects
+                describing the run type, run id, and proposed state for each
+                transition.
+
+        Returns:
+            a `StateTransitionPreviewResponse` with a verdict (or an explicit
+            error) per transition.
+        """
+        from prefect.client.schemas.state_transitions import (
+            StateTransitionPreviewRequest,
+            StateTransitionPreviewResponse,
+        )
+
+        response = self.request(
+            "POST",
+            "/state_transitions/preview",
+            json=StateTransitionPreviewRequest(
+                transitions=transitions
+            ).model_dump(mode="json"),
+        )
+        return StateTransitionPreviewResponse.model_validate(response.json())
+
+    def read_state_transition_preview_observations(self) -> Any:
+        """Read the server's recorded precheck counts and reasons."""
+        from prefect.client.schemas.state_transitions import (
+            StateTransitionPreviewObservations,
+        )
+
+        response = self.request("GET", "/state_transitions/preview/observations")
+        return StateTransitionPreviewObservations.model_validate(response.json())
+
     def read_flow_run_state(self, flow_run_state_id: "UUID") -> "State":
         """
         Read a flow run state by ID.
@@ -943,6 +982,47 @@ class FlowRunAsyncClient(BaseAsyncClient):
             response.json()
         )
         return result
+
+    async def preview_state_transitions(
+        self,
+        transitions: list[Any],
+    ) -> Any:
+        """
+        Precheck one or more flow/task run state transitions without committing.
+
+        Args:
+            transitions: a list of `StateTransitionPreviewItem` objects
+                describing the run type, run id, and proposed state for each
+                transition.
+
+        Returns:
+            a `StateTransitionPreviewResponse` with a verdict (or an explicit
+            error) per transition.
+        """
+        from prefect.client.schemas.state_transitions import (
+            StateTransitionPreviewRequest,
+            StateTransitionPreviewResponse,
+        )
+
+        response = await self.request(
+            "POST",
+            "/state_transitions/preview",
+            json=StateTransitionPreviewRequest(
+                transitions=transitions
+            ).model_dump(mode="json"),
+        )
+        return StateTransitionPreviewResponse.model_validate(response.json())
+
+    async def read_state_transition_preview_observations(self) -> Any:
+        """Read the server's recorded precheck counts and reasons."""
+        from prefect.client.schemas.state_transitions import (
+            StateTransitionPreviewObservations,
+        )
+
+        response = await self.request(
+            "GET", "/state_transitions/preview/observations"
+        )
+        return StateTransitionPreviewObservations.model_validate(response.json())
 
     async def read_flow_run_state(self, flow_run_state_id: "UUID") -> "State":
         """

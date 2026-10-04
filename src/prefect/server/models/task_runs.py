@@ -567,6 +567,72 @@ async def set_task_run_state(
     return result
 
 
+async def preview_task_run_state(
+    session: AsyncSession,
+    task_run_id: UUID,
+    state: schemas.states.State,
+    force: bool = False,
+    task_policy: Optional[Type[TaskRunOrchestrationPolicy]] = None,
+    orchestration_parameters: Optional[Dict[str, Any]] = None,
+    current_state: Optional[schemas.states.State] = None,
+) -> OrchestrationResult:
+    """
+    Evaluate the orchestration verdict for a task run state transition without
+    committing it.
+
+    See `prefect.server.models.flow_runs.preview_flow_run_state` for the
+    read-only guarantees; this mirrors `set_task_run_state`, including the
+    deferred-background-task policy selection.
+    """
+    from prefect.server.orchestration.preview import (
+        run_transition_preview,
+        verify_state_snapshot,
+    )
+
+    run = await models.task_runs.read_task_run(session=session, task_run_id=task_run_id)
+
+    if not run:
+        raise ObjectNotFoundError(f"Task run with id {task_run_id} not found")
+
+    await verify_state_snapshot(run, current_state)
+
+    initial_state = run.state.as_state() if run.state else None
+    initial_state_type = initial_state.type if initial_state else None
+    proposed_state_type = state.type if state else None
+    intended_transition = (initial_state_type, proposed_state_type)
+
+    if state.state_details.deferred:
+        task_policy = BackgroundTaskPolicy
+    elif force or task_policy is None:
+        task_policy = MinimalTaskPolicy
+
+    context = TaskOrchestrationContext(
+        session=session,
+        run=run,
+        initial_state=initial_state,
+        proposed_state=state,
+        dry_run=True,
+    )
+
+    if orchestration_parameters is not None:
+        context.parameters = orchestration_parameters
+
+    context = await run_transition_preview(
+        context=context,
+        policy=task_policy,
+        global_policy=GlobalTaskPolicy,
+        intended_transition=intended_transition,
+    )
+
+    # A rule hook that errored produced an ABORT verdict on the context; the
+    # precheck reports the verdict rather than failing the request.
+    return OrchestrationResult(
+        state=context.validated_state,
+        status=context.response_status,
+        details=context.response_details,
+    )
+
+
 async def with_system_labels_for_task_run(
     session: AsyncSession,
     task_run: schemas.core.TaskRun,

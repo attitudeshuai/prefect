@@ -19,6 +19,7 @@ from .ephemeral import ServerEphemeralSettings
 from .events import ServerEventsSettings
 from .flow_run_graph import ServerFlowRunGraphSettings
 from .logs import ServerLogsSettings
+from .orchestration import ServerOrchestrationSettings
 from .services import ServerServicesSettings
 from .tasks import ServerTasksSettings
 from .ui import ServerUISettings
@@ -145,6 +146,10 @@ class ServerSettings(PrefectBaseSettings):
     logs: ServerLogsSettings = Field(
         default_factory=ServerLogsSettings,
         description="Settings for controlling server logs behavior",
+    )
+    orchestration: ServerOrchestrationSettings = Field(
+        default_factory=ServerOrchestrationSettings,
+        description="Settings for controlling server orchestration behavior",
     )
     services: ServerServicesSettings = Field(
         default_factory=ServerServicesSettings,

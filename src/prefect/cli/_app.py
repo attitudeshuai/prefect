@@ -307,6 +307,12 @@ _app.command(
     help="View and inspect task runs.",
 )
 _app.command(
+    "prefect.cli.state_transition:state_transition_app",
+    name="state-transition",
+    alias="state-transitions",
+    help="Precheck state transitions without committing them.",
+)
+_app.command(
     "prefect.cli.api:api_app",
     name="api",
     help="Interact with the Prefect API.",
